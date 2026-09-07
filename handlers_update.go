@@ -35,6 +35,10 @@ func putFlag(w http.ResponseWriter, r *http.Request) {
 		flag.RolloutPercent = *body.RolloutPercent
 	}
 
-	updated, _ := store.Update(key, flag)
+	updated, ok := store.Update(key, flag)
+	if !ok {
+		writeError(w, http.StatusNotFound, "flag not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
 }

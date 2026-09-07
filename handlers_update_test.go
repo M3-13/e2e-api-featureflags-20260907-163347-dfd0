@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -94,5 +96,52 @@ func TestPutFlagInvalidJSON(t *testing.T) {
 	rec := putFlagRequest(t, "k", `not json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestPutFlagConcurrentDeleteNeverReturnsEmptyFlag(t *testing.T) {
+	store = NewFlagStore()
+	mux := newMux()
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []string
+
+	for i := 0; i < 200; i++ {
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			_ = store.Create(Flag{Key: "k", Enabled: false, Description: "old", RolloutPercent: 10})
+			req := httptest.NewRequest(http.MethodPut, "/flags/k", strings.NewReader(`{"enabled":true}`))
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			switch rec.Code {
+			case http.StatusOK:
+				var f Flag
+				if err := json.Unmarshal(rec.Body.Bytes(), &f); err != nil || f.Key != "k" {
+					mu.Lock()
+					failures = append(failures, "200 with empty/invalid flag: "+rec.Body.String())
+					mu.Unlock()
+				}
+			case http.StatusNotFound:
+			default:
+				mu.Lock()
+				failures = append(failures, "unexpected status "+strconv.Itoa(rec.Code))
+				mu.Unlock()
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+			store.Delete("k")
+		}()
+	}
+
+	wg.Wait()
+
+	if len(failures) > 0 {
+		t.Fatalf("handler returned unexpected response under concurrent delete: %v", failures)
 	}
 }
